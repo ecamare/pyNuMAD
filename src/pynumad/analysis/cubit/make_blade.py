@@ -1399,22 +1399,91 @@ def cubit_make_solid_blade(
 
     cubit.cmd(f"delete curve all with Is_Free except {spanwise_mat_ori_curve}")
     cubit.cmd(f"delete vertex all with Is_Free except {spanwise_mat_ori_curve}")
-    
-    # if settings["export"] is not None:
-    #     if "g" in settings["export"].lower():
-    #         cubit.set_element_variable(global_ids, 'rotation_angle_one', theta1s)
-    #         cubit.set_element_variable(global_ids, 'rotation_angle_two', theta2s)
-    #         cubit.set_element_variable(global_ids, 'rotation_angle_three', theta3s)
-
-    #         cubit.set_element_variable(global_ids, 'rotation_axis_one', 1*np.ones(n_el))
-    #         cubit.set_element_variable(global_ids, 'rotation_axis_two', 2*np.ones(n_el))
-    #         cubit.set_element_variable(global_ids, 'rotation_axis_three', 3*np.ones(n_el))
-    #         cubit.cmd(f'export mesh "{wt_name}.g" overwrite')
-    #     if "cub" in settings["export"].lower():
-    #         cubit.cmd(f'save as "{wt_name}.cub" overwrite')
 
 
     return materials_used, volume_dict
+
+def add_external_layers(panel_names,layer_names,layer_dens,layer_thicknesses,npl):
+    #Grows layers external to blade OML
+
+
+    layer_colors = ['orange', 'grey']
+
+
+    last_created_vol = get_last_id("volume")
+    for panel_name in panel_names:
+
+        surfaces_to_offset = parse_cubit_list("surface", f'with name "{panel_name}"')
+        for offset_surf_id in surfaces_to_offset:
+            surface_normal = get_surface_normal(offset_surf_id)
+            
+            offset_distance = 0.0
+            bottom_surf_id = offset_surf_id
+            for i_layer,layer_thickness in enumerate(layer_thicknesses):
+                offset_distance=offset_distance+layer_thickness
+                cubit.cmd(f'create sheet offset from surface {offset_surf_id} offset {offset_distance}')
+                delete_body_id = get_last_id("body")
+                top_surface_id = get_last_id("surface")
+                cubit.cmd(f'surface {top_surface_id} rename "topFace"') #Works for only two layers in stack. 
+                i_start = get_last_id("curve")
+                cubit.cmd(f'create volume loft surface {bottom_surf_id} {top_surface_id}')
+                
+                i_end = get_last_id("curve")
+
+                vol_id = get_last_id("volume")
+
+                if vol_id == last_created_vol:
+                    raise(f'Volume creation failed for external layer on surf {offset_surf_id} and layer {i_layer+1}')
+                else:
+                    last_created_vol = vol_id
+                cubit.cmd(f'volume {vol_id} rename "{layer_names[i_layer]}"')
+
+                #Add intervals to thickness curves
+                thickness_curve_ids = []
+                for curve_id in list(range(i_start,i_end+1)):
+                    this_curve=cubit.curve(curve_id)
+                    mid_point = list(this_curve.position_from_fraction(0.5))
+                    this_tangent = this_curve.tangent(mid_point)
+
+                    dot_prod = this_tangent[0]*surface_normal[0]+this_tangent[1]*surface_normal[1]+this_tangent[2]*surface_normal[2]
+                    print(abs(1-dot_prod))
+                    if abs(1-dot_prod) < 0.1: #For curves that are approx. parallel to the surface normal
+                        thickness_curve_ids.append(curve_id)
+
+                #rename curve
+                if len(thickness_curve_ids) ==4:
+                    for curve_id in thickness_curve_ids:
+                        cubit.cmd(f'curve {curve_id} rename "new_thickness"')  
+                else:
+                    cubit.cmd(f'save as "debug.cub" overwrite')
+                    raise RuntimeError(f'Failed to find 4 thickness curves in vol {vol_id}')
+                
+                
+                cubit.cmd(f'delete body {delete_body_id}')
+                bottom_surf_id= parse_cubit_list("surface", f'with name "topFace*" in vol {vol_id}')[0]
+
+
+    cubit.cmd(f'merge vol all')
+    cubit.cmd(f'curve with name "new_thickness*" interval {npl}')
+
+
+    layer_weights = []
+    for i_layer, layer_name in enumerate(layer_names):
+        cubit.cmd(f'mesh vol with name "{layer_name}*" ')
+
+        cubit.cmd(f'block {100+i_layer} add volume with name "{layer_name}*"')
+        cubit.cmd(f'block {100+i_layer} name "{layer_name}"')
+        cubit.cmd(f"color volume with name '{layer_name}*' mesh {layer_colors[i_layer]}")
+        cubit.cmd(f"color volume with name '{layer_name}*' geometry {layer_colors[i_layer]}")
+        layer_volume = 0.0
+        for volume_id in parse_cubit_list("volume", f'with name "{layer_name}*"'):
+            
+            layer_volume+=get_volume_volume(volume_id)
+        layer_weights.append(layer_dens[i_layer]*layer_volume)
+
+    return layer_weights
+    
+
 
 def yaml_mesh_to_cubit(dir_name,yaml_file_base,element_type,plot_mat_ori = True):
     import yaml
