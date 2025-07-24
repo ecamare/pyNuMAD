@@ -1403,85 +1403,90 @@ def cubit_make_solid_blade(
 
     return materials_used, volume_dict
 
-def add_external_layers(panel_names,layer_names,layer_dens,layer_thicknesses,npl):
+def add_external_layers(panel_names,layer_names,layer_thickness,n_layers_to_add,npl,add_external_layers_station_list):
     #Grows layers external to blade OML
 
 
     layer_colors = ['orange', 'grey']
 
 
-    last_created_vol = get_last_id("volume")
+    surfaces_to_offset = []
     for panel_name in panel_names:
+        for i_station in add_external_layers_station_list:
+            surf_name = panel_name.replace('*',str(i_station).zfill(3))
+            surfaces_to_offset += parse_cubit_list("surface", f'with name "{surf_name}"')
 
-        surfaces_to_offset = parse_cubit_list("surface", f'with name "{panel_name}"')
-        for offset_surf_id in surfaces_to_offset:
-            surface_normal = get_surface_normal(offset_surf_id)
-            
-            offset_distance = 0.0
-            bottom_surf_id = offset_surf_id
-            for i_layer,layer_thickness in enumerate(layer_thicknesses):
-                offset_distance=offset_distance+layer_thickness
-                cubit.cmd(f'create sheet offset from surface {offset_surf_id} offset {offset_distance}')
-                delete_body_id = get_last_id("body")
-                top_surface_id = get_last_id("surface")
-                cubit.cmd(f'surface {top_surface_id} rename "topFace"') #Works for only two layers in stack. 
-                i_start = get_last_id("curve")
-                cubit.cmd(f'create volume loft surface {bottom_surf_id} {top_surface_id}')
-                
-                i_end = get_last_id("curve")
+    total_stack_thickness  = n_layers_to_add*layer_thickness
+    layer_1_hex_ids = []
+    layer_2_hex_ids = []
+    layer_3_hex_ids = []
+    layer_4_hex_ids = []
 
-                vol_id = get_last_id("volume")
+    layer_1_node_ids =[]
+    layer_2_node_ids =[]
+    layer_3_node_ids =[]
+    layer_4_node_ids =[]
 
-                if vol_id == last_created_vol:
-                    raise(f'Volume creation failed for external layer on surf {offset_surf_id} and layer {i_layer+1}')
-                else:
-                    last_created_vol = vol_id
-                cubit.cmd(f'volume {vol_id} rename "{layer_names[i_layer]}"')
+    for offset_surf_id in surfaces_to_offset:
 
-                #Add intervals to thickness curves
-                thickness_curve_ids = []
-                for curve_id in list(range(i_start,i_end+1)):
-                    this_curve=cubit.curve(curve_id)
-                    mid_point = list(this_curve.position_from_fraction(0.5))
-                    this_tangent = this_curve.tangent(mid_point)
+        start_hex_id = get_last_id('hex')+1
+        start_node_id = get_last_id('node')
+        cubit.cmd(f'create element extrude face in surf {offset_surf_id} direction on surface {offset_surf_id} distance {total_stack_thickness} layers {n_layers_to_add*npl}')
+        end_hex_id = get_last_id('hex')
+        end_node_id = get_last_id('node')
 
-                    dot_prod = this_tangent[0]*surface_normal[0]+this_tangent[1]*surface_normal[1]+this_tangent[2]*surface_normal[2]
-                    print(abs(1-dot_prod))
-                    if abs(1-dot_prod) < 0.1: #For curves that are approx. parallel to the surface normal
-                        thickness_curve_ids.append(curve_id)
-
-                #rename curve
-                if len(thickness_curve_ids) ==4:
-                    for curve_id in thickness_curve_ids:
-                        cubit.cmd(f'curve {curve_id} rename "new_thickness"')  
-                else:
-                    cubit.cmd(f'save as "debug.cub" overwrite')
-                    raise RuntimeError(f'Failed to find 4 thickness curves in vol {vol_id}')
-                
-                
-                cubit.cmd(f'delete body {delete_body_id}')
-                bottom_surf_id= parse_cubit_list("surface", f'with name "topFace*" in vol {vol_id}')[0]
+        n_added_nodes = end_node_id - start_node_id
+        n_added_elements =end_hex_id -start_hex_id
 
 
-    cubit.cmd(f'merge vol all')
-    cubit.cmd(f'curve with name "new_thickness*" interval {npl}')
+        i_start = start_hex_id
+        i_end = i_start +int(n_added_elements/4)+1
+        layer_1_node_ids+=list(parse_cubit_list('node',f'in hex {i_start} to {i_end-1}'))
+        layer_1_hex_ids+=list(range(i_start, i_end))
+
+        i_start = i_end
+        i_end = i_start +int(n_added_elements/4)+1
+        layer_2_node_ids+=list(parse_cubit_list('node',f'in hex {i_start} to {i_end-1}'))
+        layer_2_hex_ids+=list(range(i_start, i_end))
+
+        i_start = i_end
+        i_end = i_start +int(n_added_elements/4)+1
+        layer_3_node_ids+=list(parse_cubit_list('node',f'in hex {i_start} to {i_end-1}'))
+        layer_3_hex_ids+=list(range(i_start, i_end))
+
+        i_start = i_end
+        i_end = i_start +int(n_added_elements/4)+1
+        layer_4_node_ids+=list(parse_cubit_list('node',f'in hex {i_start} to {i_end-1}'))
+        layer_4_hex_ids+=list(range(i_start, i_end))
+
+        cubit.cmd(f'block {100} add hex {layer_1_hex_ids+layer_2_hex_ids}')
+        cubit.cmd(f'block {101} add hex {layer_3_hex_ids+layer_4_hex_ids}')
 
 
-    layer_weights = []
-    for i_layer, layer_name in enumerate(layer_names):
-        cubit.cmd(f'mesh vol with name "{layer_name}*" ')
 
-        cubit.cmd(f'block {100+i_layer} add volume with name "{layer_name}*"')
-        cubit.cmd(f'block {100+i_layer} name "{layer_name}"')
-        cubit.cmd(f"color volume with name '{layer_name}*' mesh {layer_colors[i_layer]}")
-        cubit.cmd(f"color volume with name '{layer_name}*' geometry {layer_colors[i_layer]}")
-        layer_volume = 0.0
-        for volume_id in parse_cubit_list("volume", f'with name "{layer_name}*"'):
-            
-            layer_volume+=get_volume_volume(volume_id)
-        layer_weights.append(layer_dens[i_layer]*layer_volume)
+    cubit.cmd(f'equivalence node {list(set(layer_1_node_ids).intersection(set(layer_2_node_ids)))} tolerance 0.003')
+    cubit.cmd(f'equivalence node {list(set(layer_2_node_ids).intersection(set(layer_3_node_ids)))} tolerance 0.003')
+    final_set = set(layer_3_node_ids).intersection(set(layer_4_node_ids))
+    cubit.cmd(f'equivalence node {list(final_set)} tolerance 0.003')
+    cubit.cmd(f'equivalence node {list(set(layer_4_node_ids).difference(final_set))} tolerance 0.003')
 
-    return layer_weights
+    cubit.cmd(f'equivalence node all')
+
+
+
+    i_layer = 0
+    block_id = 100
+    cubit.cmd(f'block {block_id} name "{layer_names[i_layer]}"')
+    cubit.cmd(f"color block {block_id} mesh {layer_colors[i_layer]}")
+    cubit.cmd(f"color block {block_id} geometry {layer_colors[i_layer]}")
+
+    i_layer = 1
+    block_id = 101
+    cubit.cmd(f'block {block_id} name "{layer_names[i_layer]}"')
+    cubit.cmd(f"color block {block_id} mesh {layer_colors[i_layer]}")
+    cubit.cmd(f"color block {block_id} geometry {layer_colors[i_layer]}")
+
+    return 
     
 
 
